@@ -83,7 +83,7 @@ class InputDataDecoder {
       if (obj.type === 'event') return acc
       const method = obj.name || null
       let types = obj.inputs ? obj.inputs.map(x => {
-        if (x.type === 'tuple[]') {
+        if (x.type.includes('tuple')) {
           return x
         } else {
           return x.type
@@ -91,8 +91,8 @@ class InputDataDecoder {
       }) : []
 
       let names = obj.inputs ? obj.inputs.map(x => {
-        if (x.type === 'tuple[]') {
-          return ''
+        if (x.type.includes('tuple')) {
+          return [x.name, x.components.map(a => a.name)]
         } else {
           return x.name
         }
@@ -107,15 +107,27 @@ class InputDataDecoder {
           inputsBuf = normalizeAddresses(types, inputsBuf)
           inputs = ethabi.rawDecode(types, inputsBuf)
         } catch (err) {
-          // TODO: normalize addresses for tuples
           inputs = ethers.utils.defaultAbiCoder.decode(types, inputsBuf)
+          // defaultAbiCoder attaches some unwanted properties to the list object
+          inputs = deepRemoveUnwantedArrayProperties(inputs)
 
-          inputs = inputs[0]
+          // TODO: normalize addresses for tuples
         }
+
+        // Map any tuple types into arrays
+        const typesToReturn = types.map(t => {
+          if (t.components) {
+            const arr = t.components.reduce((acc, cur) => [...acc, cur.type], [])
+            const tupleStr = `(${arr.join(',')})`
+            if (t.type === 'tuple[]') return tupleStr + '[]'
+            return tupleStr
+          }
+          return t
+        })
 
         return {
           method,
-          types,
+          types: typesToReturn,
           inputs,
           names
         }
@@ -135,6 +147,13 @@ class InputDataDecoder {
 
     return result
   }
+}
+
+function deepRemoveUnwantedArrayProperties (arr) {
+  return [...arr.map(item => {
+    if (Array.isArray(item)) return deepRemoveUnwantedArrayProperties(item)
+    return item
+  })]
 }
 
 function normalizeAddresses (types, input) {
@@ -172,11 +191,9 @@ function isArray (type) {
   return type.lastIndexOf(']') === type.length - 1
 }
 
-function handleInputs (input) {
-  let tupleArray = false
+function handleInputs (input, tupleArray) {
   if (input instanceof Object && input.components) {
     input = input.components
-    tupleArray = true
   }
 
   if (!Array.isArray(input)) {
@@ -201,11 +218,13 @@ function handleInputs (input) {
   if (tupleArray) {
     return ret + '[]'
   }
+
+  return ret
 }
 
 function genMethodId (methodName, types) {
   const input = methodName + '(' + (types.reduce((acc, x) => {
-    acc.push(handleInputs(x))
+    acc.push(handleInputs(x, x.type === 'tuple[]'))
     return acc
   }, []).join(',')) + ')'
 
